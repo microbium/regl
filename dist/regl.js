@@ -1008,7 +1008,7 @@ function createExtensionCache (gl, config) {
     extensions: extensions,
     restore: function () {
       Object.keys(extensions).forEach(function (name) {
-        if (!tryLoadExtension(name)) {
+        if (extensions[name] && !tryLoadExtension(name)) {
           throw new Error('(regl): error restoring extension ' + name)
         }
       });
@@ -1232,16 +1232,21 @@ var wrapLimits = function (gl, extensions) {
   }
 
   // detect non power of two cube textures support (IE doesn't support)
+  var isIE = typeof navigator !== 'undefined' && (/MSIE/.test(navigator.userAgent) || /Trident\//.test(navigator.appVersion) || /Edge/.test(navigator.userAgent));
+
   var npotTextureCube = true;
-  var cubeTexture = gl.createTexture();
-  var data = pool.allocType(GL_UNSIGNED_BYTE$1, 36);
-  gl.activeTexture(GL_TEXTURE0);
-  gl.bindTexture(GL_TEXTURE_CUBE_MAP, cubeTexture);
-  gl.texImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X, 0, GL_RGBA, 3, 3, 0, GL_RGBA, GL_UNSIGNED_BYTE$1, data);
-  pool.freeType(data);
-  gl.bindTexture(GL_TEXTURE_CUBE_MAP, null);
-  gl.deleteTexture(cubeTexture);
-  npotTextureCube = !gl.getError();
+
+  if (!isIE) {
+    var cubeTexture = gl.createTexture();
+    var data = pool.allocType(GL_UNSIGNED_BYTE$1, 36);
+    gl.activeTexture(GL_TEXTURE0);
+    gl.bindTexture(GL_TEXTURE_CUBE_MAP, cubeTexture);
+    gl.texImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X, 0, GL_RGBA, 3, 3, 0, GL_RGBA, GL_UNSIGNED_BYTE$1, data);
+    pool.freeType(data);
+    gl.bindTexture(GL_TEXTURE_CUBE_MAP, null);
+    gl.deleteTexture(cubeTexture);
+    npotTextureCube = !gl.getError();
+  }
 
   return {
     // drawing buffer bit depth
@@ -1622,6 +1627,13 @@ function wrapBufferState (gl, stats, config, attributeState) {
       } else {
         pool.freeType(transposeData);
       }
+    } else if (data instanceof ArrayBuffer) {
+      buffer.dtype = GL_UNSIGNED_BYTE$3;
+      buffer.dimension = dimension;
+      initBufferFromTypedArray(buffer, data, usage);
+      if (persist) {
+        buffer.persistentData = new Uint8Array(new Uint8Array(data));
+      }
     } else {
       check$1.raise('invalid buffer data');
     }
@@ -1659,7 +1671,8 @@ function wrapBufferState (gl, stats, config, attributeState) {
       var dimension = 1;
       if (Array.isArray(options) ||
           isTypedArray(options) ||
-          isNDArrayLike(options)) {
+          isNDArrayLike(options) ||
+          options instanceof ArrayBuffer) {
         data = options;
       } else if (typeof options === 'number') {
         byteLength = options | 0;
@@ -1729,7 +1742,7 @@ function wrapBufferState (gl, stats, config, attributeState) {
       var offset = (offset_ || 0) | 0;
       var shape;
       buffer.bind();
-      if (isTypedArray(data)) {
+      if (isTypedArray(data) || data instanceof ArrayBuffer) {
         setSubData(data, offset);
       } else if (Array.isArray(data)) {
         if (data.length > 0) {
@@ -3785,6 +3798,15 @@ function createTextureSet (
   }
 
   function restoreTextures () {
+    for (var i = 0; i < numTexUnits; ++i) {
+      var tex = textureUnits[i];
+      if (tex) {
+        tex.bindCount = 0;
+        tex.unit = -1;
+        textureUnits[i] = null;
+      }
+    }
+
     values(textureSet).forEach(function (texture) {
       texture.texture = gl.createTexture();
       gl.bindTexture(texture.target, texture.texture);
@@ -4337,6 +4359,8 @@ function wrapFBOState (
       } else if (attachment.renderbuffer) {
         attachment.renderbuffer.resize(w, h);
       }
+      attachment.width = w;
+      attachment.height = h;
     }
   }
 
@@ -4415,7 +4439,7 @@ function wrapFBOState (
 
     // Check status code
     var status = gl.checkFramebufferStatus(GL_FRAMEBUFFER$1);
-    if (status !== GL_FRAMEBUFFER_COMPLETE$1) {
+    if (!gl.isContextLost() && status !== GL_FRAMEBUFFER_COMPLETE$1) {
       check$1.raise('framebuffer configuration not supported, status = ' +
         statusCode[status]);
     }
@@ -4437,8 +4461,6 @@ function wrapFBOState (
 
       check$1(framebufferState.next !== framebuffer,
         'can not update framebuffer which is currently in use');
-
-      var extDrawBuffers = extensions.webgl_draw_buffers;
 
       var width = 0;
       var height = 0;
@@ -4491,7 +4513,7 @@ function wrapFBOState (
             options.colors;
           if (Array.isArray(colorBuffer)) {
             check$1(
-              colorBuffer.length === 1 || extDrawBuffers,
+              colorBuffer.length === 1 || extensions.webgl_draw_buffers,
               'multiple render targets not supported');
           }
         }
@@ -4729,8 +4751,8 @@ function wrapFBOState (
       check$1(framebufferState.next !== framebuffer,
         'can not resize a framebuffer which is currently in use');
 
-      var w = w_ | 0;
-      var h = (h_ | 0) || w;
+      var w = Math.max(w_ | 0, 1);
+      var h = Math.max((h_ | 0) || w, 1);
       if (w === framebuffer.width && h === framebuffer.height) {
         return reglFramebuffer
       }
@@ -4778,8 +4800,6 @@ function wrapFBOState (
 
       check$1(faces.indexOf(framebufferState.next) < 0,
         'can not update framebuffer which is currently in use');
-
-      var extDrawBuffers = extensions.webgl_draw_buffers;
 
       var params = {
         color: null
@@ -4830,7 +4850,7 @@ function wrapFBOState (
             options.colors;
           if (Array.isArray(colorBuffer)) {
             check$1(
-              colorBuffer.length === 1 || extDrawBuffers,
+              colorBuffer.length === 1 || extensions.webgl_draw_buffers,
               'multiple render targets not supported');
           }
         }
@@ -4971,6 +4991,9 @@ function wrapFBOState (
   }
 
   function restoreFramebuffers () {
+    framebufferState.cur = null;
+    framebufferState.next = null;
+    framebufferState.dirty = true;
     values(framebufferSet).forEach(function (fb) {
       fb.framebuffer = gl.createFramebuffer();
       updateFramebuffer(fb);
@@ -5438,7 +5461,7 @@ function createEnvironment () {
       def: def,
       toString: function () {
         return join([
-          (vars.length > 0 ? 'var ' + vars + ';' : ''),
+          (vars.length > 0 ? 'var ' + vars.join(',') + ';' : ''),
           join(code)
         ])
       }
@@ -7317,6 +7340,7 @@ function reglCore (
         var VALUE = env.invoke(block, dyn);
 
         var shared = env.shared;
+        var constants = env.constants;
 
         var IS_BUFFER_ARGS = shared.isBufferArgs;
         var BUFFER_STATE = shared.buffer;
@@ -7378,7 +7402,7 @@ function reglCore (
           BUFFER, '=', BUFFER_STATE, '.getBuffer(', VALUE, '.buffer);',
           '}',
           TYPE, '="type" in ', VALUE, '?',
-          shared.glTypes, '[', VALUE, '.type]:', BUFFER, '.dtype;',
+          constants.glTypes, '[', VALUE, '.type]:', BUFFER, '.dtype;',
           result.normalized, '=!!', VALUE, '.normalized;');
         function emitReadRecord (name) {
           block(result[name], '=', VALUE, '.', name, '|0;');
@@ -7838,6 +7862,7 @@ function reglCore (
         scope(
           'if(', BINDING, '.buffer){',
           GL, '.disableVertexAttribArray(', LOCATION, ');',
+          BINDING, '.buffer=null;',
           '}if(', CUTE_COMPONENTS.map(function (c, i) {
             return BINDING + '.' + c + '!==' + CONST_COMPONENTS[i]
           }).join('||'), '){',
@@ -8946,16 +8971,14 @@ var GL_QUERY_RESULT_AVAILABLE_EXT = 0x8867;
 var GL_TIME_ELAPSED_EXT = 0x88BF;
 
 var createTimer = function (gl, extensions) {
-  var extTimer = extensions.ext_disjoint_timer_query;
-
-  if (!extTimer) {
+  if (!extensions.ext_disjoint_timer_query) {
     return null
   }
 
   // QUERY POOL BEGIN
   var queryPool = [];
   function allocQuery () {
-    return queryPool.pop() || extTimer.createQueryEXT()
+    return queryPool.pop() || extensions.ext_disjoint_timer_query.createQueryEXT()
   }
   function freeQuery (query) {
     queryPool.push(query);
@@ -8965,13 +8988,13 @@ var createTimer = function (gl, extensions) {
   var pendingQueries = [];
   function beginQuery (stats) {
     var query = allocQuery();
-    extTimer.beginQueryEXT(GL_TIME_ELAPSED_EXT, query);
+    extensions.ext_disjoint_timer_query.beginQueryEXT(GL_TIME_ELAPSED_EXT, query);
     pendingQueries.push(query);
     pushScopeStats(pendingQueries.length - 1, pendingQueries.length, stats);
   }
 
   function endQuery () {
-    extTimer.endQueryEXT(GL_TIME_ELAPSED_EXT);
+    extensions.ext_disjoint_timer_query.endQueryEXT(GL_TIME_ELAPSED_EXT);
   }
 
   //
@@ -9025,8 +9048,8 @@ var createTimer = function (gl, extensions) {
     ptr = 0;
     for (i = 0; i < pendingQueries.length; ++i) {
       var query = pendingQueries[i];
-      if (extTimer.getQueryObjectEXT(query, GL_QUERY_RESULT_AVAILABLE_EXT)) {
-        queryTime += extTimer.getQueryObjectEXT(query, GL_QUERY_RESULT_EXT);
+      if (extensions.ext_disjoint_timer_query.getQueryObjectEXT(query, GL_QUERY_RESULT_AVAILABLE_EXT)) {
+        queryTime += extensions.ext_disjoint_timer_query.getQueryObjectEXT(query, GL_QUERY_RESULT_EXT);
         freeQuery(query);
       } else {
         pendingQueries[ptr++] = query;
@@ -9068,7 +9091,7 @@ var createTimer = function (gl, extensions) {
     clear: function () {
       queryPool.push.apply(queryPool, pendingQueries);
       for (var i = 0; i < queryPool.length; i++) {
-        extTimer.deleteQueryEXT(queryPool[i]);
+        extensions.ext_disjoint_timer_query.deleteQueryEXT(queryPool[i]);
       }
       pendingQueries.length = 0;
       queryPool.length = 0;
