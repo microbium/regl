@@ -12,7 +12,9 @@ tape('attribute constants', function (t) {
   //
   // A more robust long-term solution is perhaps to have regl query the available extensions and
   // register them as available even if you did not ask for them.
-  createContext.refreshCanvas()
+  if (createContext.refreshCanvas) {
+    createContext.refreshCanvas()
+  }
 
   var gl = createContext(2, 2)
   var regl = createREGL(gl)
